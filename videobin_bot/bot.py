@@ -79,13 +79,15 @@ async def ping(event: hikari.GuildMessageCreateEvent) -> None:
 
     if event.content == ("!videobin"):
         new = not playlist
+        channel = event.get_channel()
         if new:
             playlist = Playlist.create()
+        await channel.edit(topic=f"https://www.youtube.com/playlist?list={playlist.playlist_id}")
 
         set_videobin(event.guild_id, event.channel_id, playlist.playlist_id)
         target_cache[event.guild_id] = (event.channel_id, playlist)
         history[event.channel_id] = videos(event.channel_id)
-        async for message in event.get_channel().fetch_history():
+        async for message in channel.fetch_history():
             try:
                 if event.content and (m := youtube_video_pattern.search(message.content)):
                     url = m.group()

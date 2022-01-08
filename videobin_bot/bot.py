@@ -4,6 +4,8 @@ import hikari
 import sqlite3
 from collections import defaultdict
 
+from videobin_bot.playlist import Playlist
+
 bot = hikari.GatewayBot(token=os.environ["DISCORD_TOKEN"])
 con = sqlite3.connect('bot.db')
 cur = con.cursor()
@@ -19,30 +21,29 @@ CREATE TABLE IF NOT EXISTS videos (
 cur.execute('''
 CREATE TABLE IF NOT EXISTS metadata (
   guild INTEGER PRIMARY KEY,
-  channel INTEGER
+  channel INTEGER,
+  playlist text
 );
 ''')
 
 # Save (commit) the changes
 con.commit()
 
-def set_videobin(guild_id, channel_id):
+def set_videobin(guild_id, channel_id, playlist_id):
     with con:
         con.execute(
             """
-            INSERT INTO metadata(guild, channel) VALUES(?, ?)
+            INSERT INTO metadata(guild, channel, playlist) VALUES(?, ?, ?)
               ON CONFLICT(guild) DO UPDATE SET channel=(?);
             """, 
-            (guild_id, channel_id, channel_id)
+            (guild_id, channel_id, playlist_id, channel_id)
         )
 
-def get_channel(guild_id):
+def get_metadata(guild_id):
     with con:
-        res = con.execute(
-            "SELECT channel FROM metadata where guild = ?", (guild_id, )
+        return con.execute(
+            "SELECT channel, playlist FROM metadata where guild = ?", (guild_id, )
         ).fetchone()
-        if res:
-            return res[0]
 
 def videos(channel_id):
     return set(r[0] for r in con.execute("SELECT url from videos WHERE channel=?", (channel_id, )).fetchall())
@@ -63,11 +64,26 @@ async def ping(event: hikari.GuildMessageCreateEvent) -> None:
         print('Abort!')
         return
 
-    target = target_cache.setdefault(event.guild_id, get_channel(event.guild_id))
+    if event.guild_id in target_cache:
+        target, playlist = target_cache[event.guild_id]
+        playlist_id = playlist.playlist_id
+    else:
+        metadata = get_metadata(event.guild_id)
+        if metadata:
+            target, playlist_id = metadata
+            playlist = Playlist(playlist_id)
+
+            target_cache[event.guild_id] = (target, Playlist(playlist_id))
+        else:
+            target, playlist, playlist_id = None, None, None
 
     if event.content == ("!videobin"):
-        set_videobin(event.guild_id, event.channel_id)
-        target_cache[event.guild_id] = event.channel_id
+        new = not playlist
+        if new:
+            playlist = Playlist.create()
+
+        set_videobin(event.guild_id, event.channel_id, playlist.playlist_id)
+        target_cache[event.guild_id] = (event.channel_id, playlist)
         history[event.channel_id] = videos(event.channel_id)
         async for message in event.get_channel().fetch_history():
             try:
@@ -75,11 +91,12 @@ async def ping(event: hikari.GuildMessageCreateEvent) -> None:
                     url = m.group()
                     if url not in history[event.channel_id]:
                         history[event.channel_id].add(url)
+                        if new:
+                            playlist.add(url)
                         add_video(event.channel_id, url)
             except TypeError:
                 pass
-    elif target is None or target != event.channel_id:
-        print('Abort!')
+    elif target is None or playlist is None or target != event.channel_id:
         return
     elif m := youtube_video_pattern.search(event.content):
         url = m.group()
@@ -92,4 +109,5 @@ async def ping(event: hikari.GuildMessageCreateEvent) -> None:
                 pass # User has DMs off
         else:
             add_video(event.channel_id, url)
+            playlist.add(url)
             history[event.channel_id].add(url)
